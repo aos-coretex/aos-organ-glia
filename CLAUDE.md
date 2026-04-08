@@ -5,11 +5,11 @@
 - **Organ:** Glia (#130)
 - **Profile:** Probabilistic
 - **MP-3 deliverable:** data plane (ticket database + HTTP API with state machine)
-- **MP-4 deliverable:** organ-boot refactor, autoheal pipeline (L1/L2/L3), Spine connectivity
+- **MP-4 deliverable:** organ-boot refactor, Glia pipeline (L1/L2/L3), Spine connectivity
 
 ## Current State (MP-4)
 
-Full organ implementation: SQLite database, strict ticket state machine, three-layer autoheal pipeline (L1 deterministic handlers, L2 smart dispatch via Lobe at port 4010, L3 fix proposals), Spine-connected live loop.
+Full organ implementation: SQLite database, strict ticket state machine, three-layer Glia pipeline (L1 deterministic handlers, L2 smart dispatch via Lobe at port 4010, L3 fix proposals), Spine-connected live loop.
 
 **Pipeline capabilities:**
 - **Intake:** Spine broadcast subscription for `verification_result` failures, deduplication, repeat failure escalation
@@ -61,4 +61,4 @@ npm run seed    # Populate glia.db from monolith ai-kb.db
 - Router factory functions with dependency injection
 - In-memory SQLite (`:memory:`) for test isolation
 - Structured JSON logging to stdout
-- URN format: `urn:autoheal:ticket:<ISO8601>-<test_id>`
+- URN format: `urn:glia:ticket:<ISO8601>-<test_id>`
