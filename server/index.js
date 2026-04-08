@@ -1,10 +1,13 @@
-import express from 'express';
 import { resolve } from 'node:path';
+import { createOrgan } from '@coretex/organ-boot';
 import { config } from './config.js';
 import { initDatabase } from './db/init.js';
-import { loggingMiddleware } from './middleware/logging.js';
 import { createTicketsRouter } from './routes/tickets.js';
-import { createHealthRouter } from './routes/health.js';
+import { createIntake } from './pipeline/intake.js';
+import { createClassifier } from './pipeline/classifier.js';
+import { createFixer } from './pipeline/fixer.js';
+import { createEscalator } from './pipeline/escalator.js';
+import { handleDirectedMessage } from './handlers/messages.js';
 
 function log(event, data = {}) {
   const entry = { timestamp: new Date().toISOString(), event, ...data };
@@ -18,35 +21,101 @@ const db = initDatabase(dbPath);
 const conceptCount = db.prepare('SELECT COUNT(*) as count FROM concepts').get().count;
 log('db_initialized', { path: dbPath, concepts: conceptCount });
 
-// Create Express app
-const app = express();
-app.use(express.json());
-app.use(loggingMiddleware);
+// Build pipeline components
+const escalator = createEscalator(db);
+const fixer = createFixer(db, escalator);
+const classifier = createClassifier(db, config, fixer, escalator);
+const intake = createIntake(db, config, classifier, escalator);
 
-// Mount routes
-const startTime = Date.now();
+// Spine reference — set after organ boots
+let spineRef = null;
 
-app.use('/tickets', createTicketsRouter(db));
-app.use('/', createHealthRouter(db, startTime));
+// Boot organ
+const organ = await createOrgan({
+  name: 'Glia',
+  port: config.port,
+  binding: config.binding,
+  spineUrl: config.spineUrl,
 
-// Start server
-const server = app.listen(config.port, config.binding, () => {
-  log('glia_started', {
-    port: config.port,
-    binding: config.binding,
-    db_path: dbPath,
-    concepts: conceptCount,
-  });
-});
+  routes: (app) => {
+    app.use('/tickets', createTicketsRouter(db));
+  },
 
-// Graceful shutdown
-function shutdown(signal) {
-  log('glia_shutdown', { signal });
-  server.close(() => {
+  onMessage: (envelope) => handleDirectedMessage(envelope, db, { classifier, fixer, escalator, spine: spineRef }),
+
+  onBroadcast: (envelope) => {
+    // Intake: listen for verification_result failures
+    if (envelope.event_type === 'verification_result') {
+      const payload = envelope.payload || envelope;
+      if (payload.status === 'fail') {
+        intake.onFailure(payload, spineRef);
+      }
+    }
+  },
+
+  subscriptions: [
+    { event_type: 'verification_result' },
+  ],
+
+  dependencies: ['Spine'],
+
+  healthCheck: async () => {
+    let dbConnected = true;
+    let openTickets = 0;
+    try {
+      const row = db.prepare(
+        "SELECT COUNT(*) as count FROM concepts WHERE json_extract(data, '$.type') = 'autoheal_ticket' AND json_extract(data, '$.state') NOT IN ('solved', 'human_required')"
+      ).get();
+      openTickets = row.count;
+    } catch {
+      dbConnected = false;
+    }
+    return {
+      db_connected: dbConnected,
+      open_tickets: openTickets,
+      pipeline_active: true,
+    };
+  },
+
+  introspectCheck: async () => {
+    const totalTickets = db.prepare(
+      "SELECT COUNT(*) as count FROM concepts WHERE json_extract(data, '$.type') = 'autoheal_ticket'"
+    ).get().count;
+
+    const states = {};
+    const rows = db.prepare(
+      "SELECT json_extract(data, '$.state') as state, COUNT(*) as count FROM concepts WHERE json_extract(data, '$.type') = 'autoheal_ticket' GROUP BY json_extract(data, '$.state')"
+    ).all();
+    for (const row of rows) {
+      states[row.state] = row.count;
+    }
+
+    const schemaVersion = db.prepare(
+      "SELECT value FROM op_config WHERE key = 'schema_version'"
+    ).get();
+
+    return {
+      total_tickets: totalTickets,
+      tickets_by_state: states,
+      schema_version: schemaVersion ? schemaVersion.value : null,
+      db_path: db.name,
+      classify_timeout_ms: config.classificationTimeoutMs,
+      max_concurrent_classifications: config.maxConcurrentClassifications,
+    };
+  },
+
+  onStartup: async ({ spine }) => {
+    spineRef = spine;
+    log('pipeline_initialized', {
+      repeat_threshold: config.repeatFailureThreshold,
+      repeat_window_days: config.repeatFailureWindowDays,
+      classify_timeout_ms: config.classificationTimeoutMs,
+      lobe_url: config.lobeUrl,
+    });
+  },
+
+  onShutdown: async () => {
+    classifier.shutdown();
     db.close();
-    process.exit(0);
-  });
-}
-
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT', () => shutdown('SIGINT'));
+  },
+});

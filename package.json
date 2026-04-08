@@ -1,8 +1,8 @@
 {
   "name": "@coretex-agentic/organ-glia",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
-  "description": "Glia — Self-Healing Pipeline organ (data plane)",
+  "description": "Glia — Self-Healing Pipeline organ",
   "main": "server/index.js",
   "engines": {
     "node": ">=20"
@@ -13,6 +13,7 @@
     "seed": "node scripts/seed-from-monolith.js"
   },
   "dependencies": {
+    "@coretex/organ-boot": "file:../../organ-shared-lib",
     "better-sqlite3": "^11.0.0",
     "express": "^5.2.1"
   }
